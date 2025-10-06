@@ -80,7 +80,7 @@ class Logger:
         scalars = list(self._scalars.items())
         if fps:
             scalars.append(("fps", self._compute_fps(step)))
-        print(f"[{step}]", " / ".join(f"{k} {v:.1f}" for k, v in scalars))
+        # print(f"[{step}]", " / ".join(f"{k} {v:.1f}" for k, v in scalars))
         with (self._logdir / "metrics.jsonl").open("a") as f:
             f.write(json.dumps({"step": step, **dict(scalars)}) + "\n")
         for name, value in scalars:
@@ -149,103 +149,104 @@ def simulate(
         step, episode, done, length, obs, agent_state, reward = state
     while (steps and step < steps) or (episodes and episode < episodes):
         # reset envs if necessary
-        if done.any():
-            indices = [index for index, d in enumerate(done) if d]
-            results = [envs[i].reset() for i in indices]
-            results = [r() for r in results]
-            for index, result in zip(indices, results):
-                t = result.copy()
-                t = {k: convert(v) for k, v in t.items()}
-                # action will be added to transition in add_to_cache
-                t["reward"] = 0.0
-                t["discount"] = 1.0
-                # initial state should be added to cache
-                add_to_cache(cache, envs[index].id, t)
-                # replace obs with done by initial state
-                obs[index] = result
+        # if done.any():
+        #     indices = [index for index, d in enumerate(done) if d]
+        #     results = [envs[i].reset() for i in indices]
+        #     results = [r() for r in results]
+        #     for index, result in zip(indices, results):
+        #         t = result.copy()
+        #         t = {k: convert(v) for k, v in t.items()}
+        #         # action will be added to transition in add_to_cache
+        #         t["reward"] = 0.0
+        #         t["discount"] = 1.0
+        #         # initial state should be added to cache
+        #         add_to_cache(cache, envs[index].id, t)
+        #         # replace obs with done by initial state
+        #         obs[index] = result
         # step agents
-        obs = {k: np.stack([o[k] for o in obs]) for k in obs[0] if "log_" not in k}
-        action, agent_state = agent(obs, done, agent_state)
-        if isinstance(action, dict):
-            action = [
-                {k: np.array(action[k][i].detach().cpu()) for k in action}
-                for i in range(len(envs))
-            ]
-        else:
-            action = np.array(action)
-        assert len(action) == len(envs)
+        # obs = {k: np.stack([o[k] for o in obs]) for k in obs[0] if "log_" not in k}
+        obs =None
+        agent_state = agent(obs, done, agent_state)
+        # if isinstance(action, dict):
+        #     action = [
+        #         {k: np.array(action[k][i].detach().cpu()) for k in action}
+        #         for i in range(len(envs))
+        #     ]
+        # else:
+        #     action = np.array(action)
+        # assert len(action) == len(envs)
         # step envs
-        results = [e.step(a) for e, a in zip(envs, action)]
-        results = [r() for r in results]
-        obs, reward, done = zip(*[p[:3] for p in results])
-        obs = list(obs)
-        reward = list(reward)
-        done = np.stack(done)
-        episode += int(done.sum())
-        length += 1
-        step += len(envs)
-        length *= 1 - done
-        # add to cache
-        for a, result, env in zip(action, results, envs):
-            o, r, d, info = result
-            o = {k: convert(v) for k, v in o.items()}
-            transition = o.copy()
-            if isinstance(a, dict):
-                transition.update(a)
-            else:
-                transition["action"] = a
-            transition["reward"] = r
-            transition["discount"] = info.get("discount", np.array(1 - float(d)))
-            add_to_cache(cache, env.id, transition)
+        # results = [e.step(a) for e, a in zip(envs, action)]
+        # results = [r() for r in results]
+        # obs, reward, done = zip(*[p[:3] for p in results])
+        # obs = list(obs)
+        # reward = list(reward)
+        # done = np.stack(done)
+        # episode += int(done.sum())
+        # length += 1
+        # step += len(envs)
+        # length *= 1 - done
+        # # add to cache
+        # for a, result, env in zip(action, results, envs):
+        #     o, r, d, info = result
+        #     o = {k: convert(v) for k, v in o.items()}
+        #     transition = o.copy()
+        #     if isinstance(a, dict):
+        #         transition.update(a)
+        #     else:
+        #         transition["action"] = a
+        #     transition["reward"] = r
+        #     transition["discount"] = info.get("discount", np.array(1 - float(d)))
+        #     add_to_cache(cache, env.id, transition)
 
-        if done.any():
-            indices = [index for index, d in enumerate(done) if d]
-            # logging for done episode
-            for i in indices:
-                save_episodes(directory, {envs[i].id: cache[envs[i].id]})
-                length = len(cache[envs[i].id]["reward"]) - 1
-                score = float(np.array(cache[envs[i].id]["reward"]).sum())
-                video = cache[envs[i].id]["image"]
-                # record logs given from environments
-                for key in list(cache[envs[i].id].keys()):
-                    if "log_" in key:
-                        logger.scalar(
-                            key, float(np.array(cache[envs[i].id][key]).sum())
-                        )
-                        # log items won't be used later
-                        cache[envs[i].id].pop(key)
+    #     if done.any():
+    #         indices = [index for index, d in enumerate(done) if d]
+    #         # logging for done episode
+    #         for i in indices:
+    #             save_episodes(directory, {envs[i].id: cache[envs[i].id]})
+    #             length = len(cache[envs[i].id]["reward"]) - 1
+    #             score = float(np.array(cache[envs[i].id]["reward"]).sum())
+    #             video = cache[envs[i].id]["image"]
+    #             # record logs given from environments
+    #             for key in list(cache[envs[i].id].keys()):
+    #                 if "log_" in key:
+    #                     logger.scalar(
+    #                         key, float(np.array(cache[envs[i].id][key]).sum())
+    #                     )
+    #                     # log items won't be used later
+    #                     cache[envs[i].id].pop(key)
 
-                if not is_eval:
-                    step_in_dataset = erase_over_episodes(cache, limit)
-                    logger.scalar(f"dataset_size", step_in_dataset)
-                    logger.scalar(f"train_return", score)
-                    logger.scalar(f"train_length", length)
-                    logger.scalar(f"train_episodes", len(cache))
-                    logger.write(step=logger.step)
-                else:
-                    if not "eval_lengths" in locals():
-                        eval_lengths = []
-                        eval_scores = []
-                        eval_done = False
-                    # start counting scores for evaluation
-                    eval_scores.append(score)
-                    eval_lengths.append(length)
+    #             if not is_eval:
+    #                 step_in_dataset = erase_over_episodes(cache, limit)
+    #                 logger.scalar(f"dataset_size", step_in_dataset)
+    #                 logger.scalar(f"train_return", score)
+    #                 logger.scalar(f"train_length", length)
+    #                 logger.scalar(f"train_episodes", len(cache))
+    #                 logger.write(step=logger.step)
+    #             else:
+    #                 if not "eval_lengths" in locals():
+    #                     eval_lengths = []
+    #                     eval_scores = []
+    #                     eval_done = False
+    #                 # start counting scores for evaluation
+    #                 eval_scores.append(score)
+    #                 eval_lengths.append(length)
 
-                    score = sum(eval_scores) / len(eval_scores)
-                    length = sum(eval_lengths) / len(eval_lengths)
-                    logger.video(f"eval_policy", np.array(video)[None])
+    #                 score = sum(eval_scores) / len(eval_scores)
+    #                 length = sum(eval_lengths) / len(eval_lengths)
+    #                 logger.video(f"eval_policy", np.array(video)[None])
 
-                    if len(eval_scores) >= episodes and not eval_done:
-                        logger.scalar(f"eval_return", score)
-                        logger.scalar(f"eval_length", length)
-                        logger.scalar(f"eval_episodes", len(eval_scores))
-                        logger.write(step=logger.step)
-                        eval_done = True
-    if is_eval:
-        # keep only last item for saving memory. this cache is used for video_pred later
-        while len(cache) > 1:
-            # FIFO
-            cache.popitem(last=False)
+    #                 if len(eval_scores) >= episodes and not eval_done:
+    #                     logger.scalar(f"eval_return", score)
+    #                     logger.scalar(f"eval_length", length)
+    #                     logger.scalar(f"eval_episodes", len(eval_scores))
+    #                     logger.write(step=logger.step)
+    #                     eval_done = True
+    # if is_eval:
+    #     # keep only last item for saving memory. this cache is used for video_pred later
+    #     while len(cache) > 1:
+    #         # FIFO
+    #         cache.popitem(last=False)
     return (step - steps, episode - episodes, done, length, obs, agent_state, reward)
 
 
@@ -360,11 +361,60 @@ def sample_episodes(episodes, length, seed=0):
             size = len(next(iter(ret.values())))
         yield ret
 
+from collections.abc import Mapping
+class EpisodesView(Mapping):
+    def __init__(self, path, pos_dim=7):
+        data = np.load(path)
+        self.obs = data["obs"]            # (B,T,F)
+        self.action = data["action"]      # (B,T,...) or (B, ...)
+        B, T = self.obs.shape[:2]
+        self.B, self.T, self.pos_dim = B, T, pos_dim
+        self.is_first = np.r_[True, np.zeros(T-1, bool)]
+        self.is_terminal = np.r_[np.zeros(T-1, bool), True]
+        self.cont = np.ones(T, bool)
+        self.reward = np.zeros(T, float)
 
+    def __len__(self):
+        return self.B
+
+    def __iter__(self):
+        for i in range(self.B):
+            yield f"episode_{i}"
+
+    def __getitem__(self, key):
+        # 支持 'episode_123' 或整数索引
+        i = int(key.split("_")[-1]) if isinstance(key, str) else int(key)
+        if self.pos_dim != 0:
+            pos = self.obs[i, :, :self.pos_dim]
+            vel = self.obs[i, :, self.pos_dim:]
+            return {
+                "position": pos,
+                "velocity": vel,
+                "action": self.action[i],
+                "is_first": self.is_first,     # 共享只读数组
+                "is_terminal": self.is_terminal,
+                "reward": self.reward,
+                "cont": self.cont,
+            }
+        else:
+            return {
+                "state": self.obs[i],
+                "action": self.action[i],
+                "is_first": self.is_first,     # 共享只读数组
+                "is_terminal": self.is_terminal,
+                "reward": self.reward,
+                "cont": self.cont,
+            }
+    
+def load_episodes_single(path, nq=0, limit=None, reverse=True):
+    path = pathlib.Path(path).expanduser()
+    return EpisodesView(path, pos_dim=nq)  # 与原 OrderedDict 类似的“可迭代映射”
+    
 def load_episodes(directory, limit=None, reverse=True):
     directory = pathlib.Path(directory).expanduser()
     episodes = collections.OrderedDict()
     total = 0
+    episode_count = 0  # Add a counter for the number of episodes loaded
     if reverse:
         for filename in reversed(sorted(directory.glob("*.npz"))):
             try:
@@ -376,7 +426,8 @@ def load_episodes(directory, limit=None, reverse=True):
                 continue
             # extract only filename without extension
             episodes[str(os.path.splitext(os.path.basename(filename))[0])] = episode
-            total += len(episode["reward"]) - 1
+            total += len(episode["position"]) - 1
+            episode_count += 1
             if limit and total >= limit:
                 break
     else:
@@ -390,8 +441,10 @@ def load_episodes(directory, limit=None, reverse=True):
                 continue
             episodes[str(filename)] = episode
             total += len(episode["reward"]) - 1
+            episode_count += 1
             if limit and total >= limit:
                 break
+    print(f"Loaded {episode_count} episodes.")
     return episodes
 
 
@@ -507,7 +560,7 @@ class DiscDist:
 
 
 class MSEDist:
-    def __init__(self, mode, agg="sum"):
+    def __init__(self, mode, agg="sum"): # old default: sum
         self._mode = mode
         self._agg = agg
 
@@ -545,7 +598,7 @@ class SymlogDist:
     def log_prob(self, value):
         assert self._mode.shape == value.shape
         if self._dist == "mse":
-            distance = (self._mode - symlog(value)) ** 2.0
+            distance = (self._mode - symlog(value)) ** 2.0 # _mode will symexp when decoder[].mode()
             distance = torch.where(distance < self._tol, 0, distance)
         elif self._dist == "abs":
             distance = torch.abs(self._mode - symlog(value))
@@ -613,7 +666,6 @@ class Bernoulli:
         _logits = self._dist.base_dist.logits
         log_probs0 = -F.softplus(_logits)
         log_probs1 = -F.softplus(-_logits)
-
         return torch.sum(log_probs0 * (1 - x) + log_probs1 * x, -1)
 
 
@@ -735,6 +787,7 @@ class Optimizer:
         self._name = name
         self._parameters = parameters
         self._clip = clip
+        print('opitmizer clip', clip)
         self._wd = wd
         self._wd_pattern = wd_pattern
         self._opt = {
@@ -744,9 +797,12 @@ class Optimizer:
             "sgd": lambda: torch.optim.SGD(parameters, lr=lr),
             "momentum": lambda: torch.optim.SGD(parameters, lr=lr, momentum=0.9),
         }[opt]()
-        self._scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+        self._scaler = torch.amp.GradScaler('cuda')
 
     def __call__(self, loss, params, retain_graph=True):
+        # params = list(params)
+        named_param = list(params)                
+        params = [p for _, p in named_param] 
         assert len(loss.shape) == 0, loss.shape
         metrics = {}
         metrics[f"{self._name}_loss"] = loss.detach().cpu().numpy()
@@ -754,14 +810,32 @@ class Optimizer:
         self._scaler.scale(loss).backward(retain_graph=retain_graph)
         self._scaler.unscale_(self._opt)
         # loss.backward(retain_graph=retain_graph)
+
+        # check before clip
+        bad = False
+        for name, p in named_param:
+            if p.grad is None:
+                continue
+            g = p.grad.detach()
+            # 先快速布尔检查
+            if torch.isnan(g).any():
+                bad = True
+                print('nan grad ', name)
+            if torch.isinf(g).any():
+                bad = True
+                print('inf grad ', name)
+        if bad:
+            exit()
+
         norm = torch.nn.utils.clip_grad_norm_(params, self._clip)
+        metrics[f"{self._name}_grad_norm"] = to_np(norm)
+        metrics[f"{self._name}_grad_norm_clip"] = to_np(torch.norm(torch.stack([p.grad.detach().norm(2) for p in params if p.grad is not None]),2))
         if self._wd:
             self._apply_weight_decay(params)
         self._scaler.step(self._opt)
         self._scaler.update()
         # self._opt.step()
         self._opt.zero_grad()
-        metrics[f"{self._name}_grad_norm"] = to_np(norm)
         return metrics
 
     def _apply_weight_decay(self, varibs):

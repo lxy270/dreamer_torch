@@ -1,8 +1,11 @@
 import copy
+import sys
 import torch
 from torch import nn
-
+from PIL import Image
+import os
 import networks
+sys.path.append('/home/chenjiehao/projects/dreamerv3-torch')
 import tools
 
 to_np = lambda x: x.detach().cpu().numpy()
@@ -113,7 +116,7 @@ class WorldModel(nn.Module):
         data = self.preprocess(data)
 
         with tools.RequiresGrad(self):
-            with torch.cuda.amp.autocast(self._use_amp):
+            with torch.amp.autocast('cuda', dtype=torch.float16 if self._use_amp else torch.float32):
                 embed = self.encoder(data)
                 post, prior = self.dynamics.observe(
                     embed, data["action"], data["is_first"]
@@ -138,6 +141,10 @@ class WorldModel(nn.Module):
                 losses = {}
                 for name, pred in preds.items():
                     loss = -pred.log_prob(data[name])
+                    if torch.isnan(loss).any():
+                        print("nan loss: ", name, loss)
+                    if torch.isinf(loss).any():
+                        print("inf loss: ", name, loss)
                     assert loss.shape == embed.shape[:2], (name, loss.shape)
                     losses[name] = loss
                 scaled = {
@@ -145,7 +152,7 @@ class WorldModel(nn.Module):
                     for key, value in losses.items()
                 }
                 model_loss = sum(scaled.values()) + kl_loss
-            metrics = self._model_opt(torch.mean(model_loss), self.parameters())
+            metrics = self._model_opt(torch.mean(model_loss), self.named_parameters()) # name_param for grad check
 
         metrics.update({f"{name}_loss": to_np(loss) for name, loss in losses.items()})
         metrics["kl_free"] = kl_free
@@ -154,7 +161,7 @@ class WorldModel(nn.Module):
         metrics["dyn_loss"] = to_np(dyn_loss)
         metrics["rep_loss"] = to_np(rep_loss)
         metrics["kl"] = to_np(torch.mean(kl_value))
-        with torch.cuda.amp.autocast(self._use_amp):
+        with torch.amp.autocast('cuda', dtype=torch.float16 if self._use_amp else torch.float32):
             metrics["prior_ent"] = to_np(
                 torch.mean(self.dynamics.get_dist(prior).entropy())
             )
@@ -176,7 +183,7 @@ class WorldModel(nn.Module):
             k: torch.tensor(v, device=self._config.device, dtype=torch.float32)
             for k, v in obs.items()
         }
-        obs["image"] = obs["image"] / 255.0
+        # obs["image"] = obs["image"] / 255.0
         if "discount" in obs:
             obs["discount"] *= self._config.discount
             # (batch_size, batch_length) -> (batch_size, batch_length, 1)
@@ -210,6 +217,55 @@ class WorldModel(nn.Module):
         error = (model - truth + 1.0) / 2.0
 
         return torch.cat([truth, model, error], 2)
+    
+    def propiro_pred(self, data, condition_steps = 1):
+        # 将位置和速度拼接作为输入状态
+        state = data['targets']
+        embed = self.encoder(state)
+        # print('wm_propiro ', embed.shape, state['state'].shape, data['actions'].shape)
+        
+        # 使用前 condition_steps 步的嵌入状态
+        states, _ = self.dynamics.observe(embed[:,:condition_steps, :], data["actions"][:,:condition_steps, :], data["is_first"][:,:condition_steps,:])
+        
+        if self._config.nq != 0:
+            # 从解码器中获取重建的 position 和 velocity
+            reward_post = self.heads["reward"](self.dynamics.get_feat(states)).mode()
+            decoded = self.heads["decoder"](self.dynamics.get_feat(states))
+            recon_position = decoded["position"].mode()  # 重建的位置信息
+            recon_velocity = decoded["velocity"].mode()  # 重建的速度信息
+            
+            # 将 position 和 velocity 沿最后一个维度拼接，作为一个整体状态
+            recon_state = torch.cat([recon_position, recon_velocity], dim=-1)
+            
+            # 初始化状态
+            init = {k: v[:, -1] for k, v in states.items()}
+            prior = self.dynamics.imagine_with_action(data["actions"][:,condition_steps:], init)
+            
+            # 获取后续步骤的预测 position 和 velocity
+            reward_prior = self.heads["reward"](self.dynamics.get_feat(prior)).mode()
+            prior_decoded = self.heads["decoder"](self.dynamics.get_feat(prior))
+            openl_position = prior_decoded["position"].mode()
+            openl_velocity = prior_decoded["velocity"].mode()
+            
+            # 将预测的 position 和 velocity 拼接
+            openl_state = torch.cat([openl_position, openl_velocity], dim=-1)
+        else:
+            decoded = self.heads["decoder"](self.dynamics.get_feat(states))
+            recon_state = decoded["state"].mode() 
+            # 初始化状态
+            init = {k: v[:, -1] for k, v in states.items()}
+            prior = self.dynamics.imagine_with_action(data["actions"][:,condition_steps:], init)
+            
+            reward_prior = self.heads["reward"](self.dynamics.get_feat(prior)).mode()
+            prior_decoded = self.heads["decoder"](self.dynamics.get_feat(prior))
+            openl_state = prior_decoded["state"].mode()
+        
+        # 拼接模型预测的前 1 步和后续步骤的整体状态
+        # model = torch.cat([recon_state, openl_state], dim=1)
+        # reward = torch.cat([reward_post, reward_prior], dim=1)
+        
+        
+        return openl_state, reward_prior
 
 
 class ImagBehavior(nn.Module):
@@ -293,7 +349,7 @@ class ImagBehavior(nn.Module):
         metrics = {}
 
         with tools.RequiresGrad(self.actor):
-            with torch.cuda.amp.autocast(self._use_amp):
+            with torch.amp.autocast('cuda', dtype=torch.float16 if self._use_amp else torch.float32):
                 imag_feat, imag_state, imag_action = self._imagine(
                     start, self.actor, self._config.imag_horizon
                 )
@@ -317,7 +373,7 @@ class ImagBehavior(nn.Module):
                 value_input = imag_feat
 
         with tools.RequiresGrad(self.value):
-            with torch.cuda.amp.autocast(self._use_amp):
+            with torch.amp.autocast('cuda', dtype=torch.float16 if self._use_amp else torch.float32):
                 value = self.value(value_input[:-1].detach())
                 target = torch.stack(target, dim=1)
                 # (time, batch, 1), (time, batch, 1) -> (time, batch)

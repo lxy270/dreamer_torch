@@ -1,7 +1,6 @@
 import gym
 import numpy as np
 
-
 class DeepMindControl:
     metadata = {}
 
@@ -11,7 +10,6 @@ class DeepMindControl:
             domain = "ball_in_cup"
         if isinstance(domain, str):
             from dm_control import suite
-
             self._env = suite.load(
                 domain,
                 task,
@@ -21,22 +19,39 @@ class DeepMindControl:
             assert task is None
             self._env = domain()
         self._action_repeat = action_repeat
-        self._size = size
+        self._size = tuple(size)
         if camera is None:
             camera = dict(quadruped=2).get(domain, 0)
         self._camera = camera
         self.reward_range = [-np.inf, np.inf]
 
     @property
+    # def observation_space(self):
+    #     spaces = {}
+    #     for key, value in self._env.observation_spec().items():
+    #         if len(value.shape) == 0:
+    #             shape = (1,)
+    #         else:
+    #             shape = value.shape
+    #         spaces[key] = gym.spaces.Box(-np.inf, np.inf, shape, dtype=np.float32)
+    #     spaces["image"] = gym.spaces.Box(0, 255, self._size + (3,), dtype=np.uint8)
+    #     return gym.spaces.Dict(spaces)
+
     def observation_space(self):
-        spaces = {}
-        for key, value in self._env.observation_spec().items():
-            if len(value.shape) == 0:
-                shape = (1,)
-            else:
-                shape = value.shape
-            spaces[key] = gym.spaces.Box(-np.inf, np.inf, shape, dtype=np.float32)
-        spaces["image"] = gym.spaces.Box(0, 255, self._size + (3,), dtype=np.uint8)
+        # Get nv (velocity dimension) and nq (position dimension) directly from the physics model
+        nv = self._env.physics.data.model.nv  # Velocity dimension
+        nq = self._env.physics.data.model.nq  # Position dimension
+
+        # Define the observation space with the combined dimension
+        spaces = {
+            "position": gym.spaces.Box(
+                -np.inf, np.inf, (nq,), dtype=np.float32
+            ),
+            "velocity": gym.spaces.Box(
+                -np.inf, np.inf, (nv,), dtype=np.float32
+            )
+        }
+
         return gym.spaces.Dict(spaces)
 
     @property

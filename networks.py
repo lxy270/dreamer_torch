@@ -1,4 +1,5 @@
 import math
+import sys
 import numpy as np
 import re
 
@@ -6,7 +7,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 from torch import distributions as torchd
-
+sys.path.append('/home/chenjiehao/projects/dreamerv3-torch')
 import tools
 
 
@@ -47,7 +48,7 @@ class RSSM(nn.Module):
 
         inp_layers = []
         if self._discrete:
-            inp_dim = self._stoch * self._discrete + num_actions
+            inp_dim = self._stoch * self._discrete + num_actions # 32*32+action_dim=18->1042
         else:
             inp_dim = self._stoch + num_actions
         inp_layers.append(nn.Linear(inp_dim, self._hidden, bias=False))
@@ -125,6 +126,7 @@ class RSSM(nn.Module):
             raise NotImplementedError(self._initial)
 
     def observe(self, embed, action, is_first, state=None):
+        # action先embed后
         swap = lambda x: x.permute([1, 0] + list(range(2, len(x.shape))))
         # (batch, time, ch) -> (time, batch, ch)
         embed, action, is_first = swap(embed), swap(action), swap(is_first)
@@ -171,7 +173,7 @@ class RSSM(nn.Module):
             )
         return dist
 
-    def obs_step(self, prev_state, prev_action, embed, is_first, sample=True):
+    def obs_step(self, prev_state, prev_action, embed, is_first, sample=False):
         # initialize all prev_state
         if prev_state == None or torch.sum(is_first) == len(is_first):
             prev_state = self.initial(len(is_first))
@@ -205,7 +207,7 @@ class RSSM(nn.Module):
         post = {"stoch": stoch, "deter": prior["deter"], **stats}
         return post, prior
 
-    def img_step(self, prev_state, prev_action, sample=True):
+    def img_step(self, prev_state, prev_action, sample=False):
         # (batch, stoch, discrete_num)
         prev_stoch = prev_state["stoch"]
         if self._discrete:
@@ -213,6 +215,8 @@ class RSSM(nn.Module):
             # (batch, stoch, discrete_num) -> (batch, stoch * discrete_num)
             prev_stoch = prev_stoch.reshape(shape)
         # (batch, stoch * discrete_num) -> (batch, stoch * discrete_num + action)
+        if len(prev_action.shape) > 2:
+            prev_action = prev_action.squeeze()
         x = torch.cat([prev_stoch, prev_action], -1)
         # (batch, stoch * discrete_num + action, embed) -> (batch, hidden)
         x = self._img_in_layers(x)
@@ -233,8 +237,14 @@ class RSSM(nn.Module):
         return prior
 
     def get_stoch(self, deter):
+        if torch.isnan(deter).any():
+            print('[get stoch] deter nan')
         x = self._img_out_layers(deter)
+        if torch.isnan(deter).any():
+            print('[get stoch] _img_out_layers nan')
         stats = self._suff_stats_layer("ims", x)
+        if torch.isnan(stats['logit']).any():
+            print('[get stoch] stats nan')
         dist = self.get_dist(stats)
         return dist.mode()
 
@@ -306,12 +316,13 @@ class MultiEncoder(nn.Module):
         symlog_inputs,
     ):
         super(MultiEncoder, self).__init__()
-        excluded = ("is_first", "is_last", "is_terminal", "reward")
+        excluded = ("touch","to_target","is_first", "is_last", "is_terminal", "reward")
         shapes = {
             k: v
             for k, v in shapes.items()
             if k not in excluded and not k.startswith("log_")
         }
+        print('encoder shape ', shapes)
         self.cnn_shapes = {
             k: v for k, v in shapes.items() if len(v) == 3 and re.match(cnn_keys, k)
         }
@@ -321,6 +332,7 @@ class MultiEncoder(nn.Module):
             if len(v) in (1, 2) and re.match(mlp_keys, k)
         }
         print("Encoder CNN shapes:", self.cnn_shapes)
+        # print('nihao')
         print("Encoder MLP shapes:", self.mlp_shapes)
 
         self.outdim = 0
@@ -336,7 +348,7 @@ class MultiEncoder(nn.Module):
             self._mlp = MLP(
                 input_size,
                 None,
-                mlp_layers,
+                mlp_layers, # 5
                 mlp_units,
                 act,
                 norm,
@@ -348,11 +360,18 @@ class MultiEncoder(nn.Module):
     def forward(self, obs):
         outputs = []
         if self.cnn_shapes:
-            inputs = torch.cat([obs[k] for k in self.cnn_shapes], -1)
-            outputs.append(self._cnn(inputs))
+            if isinstance(obs, torch.Tensor):
+                outputs.append(self._cnn(obs))
+            else:
+                inputs = torch.cat([obs[k] for k in self.cnn_shapes], -1)
+                outputs.append(self._cnn(inputs))
         if self.mlp_shapes:
-            inputs = torch.cat([obs[k] for k in self.mlp_shapes], -1)
-            outputs.append(self._mlp(inputs))
+            if isinstance(obs, torch.Tensor):
+                outputs.append(self._mlp(obs))
+            else:
+
+                inputs = torch.cat([obs[k] for k in self.mlp_shapes], -1)
+                outputs.append(self._mlp(inputs))
         outputs = torch.cat(outputs, -1)
         return outputs
 
@@ -377,7 +396,7 @@ class MultiDecoder(nn.Module):
         outscale,
     ):
         super(MultiDecoder, self).__init__()
-        excluded = ("is_first", "is_last", "is_terminal")
+        excluded = ("touch","to_target","is_first", "is_last", "is_terminal")
         shapes = {k: v for k, v in shapes.items() if k not in excluded}
         self.cnn_shapes = {
             k: v for k, v in shapes.items() if len(v) == 3 and re.match(cnn_keys, k)
@@ -408,11 +427,11 @@ class MultiDecoder(nn.Module):
             self._mlp = MLP(
                 feat_size,
                 self.mlp_shapes,
-                mlp_layers,
+                mlp_layers, # 5
                 mlp_units,
                 act,
                 norm,
-                vector_dist,
+                vector_dist, # symlog_mse
                 outscale=outscale,
                 name="Decoder",
             )
@@ -432,7 +451,7 @@ class MultiDecoder(nn.Module):
                 }
             )
         if self.mlp_shapes:
-            dists.update(self._mlp(features))
+            dists.update(self._mlp(features)) # log_prob in wm._train
         return dists
 
     def _make_image_dist(self, mean):

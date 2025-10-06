@@ -3,25 +3,39 @@ import functools
 import os
 import pathlib
 import sys
+from datetime import datetime, date
+sys.path.append('/home/chenjiehao/projects/dreamerv3_torch_ver/')
+from torch.utils.tensorboard import SummaryWriter
+# os.environ['MUJOCO_GL'] = 'egl'
+# # 设置新的显示号
+# os.environ['DISPLAY'] = ':4'
+# os.environ['LIBGL_ALWAYS_SOFTWARE'] = '1'
+# os.environ["CUDA_VISIBLE_DEVICES"] = "4"
 
-os.environ["MUJOCO_GL"] = "osmesa"
 
 import numpy as np
-import ruamel.yaml as yaml
+from ruamel.yaml import YAML
+yaml = YAML(typ='safe', pure=True)
 
 sys.path.append(str(pathlib.Path(__file__).parent))
-
 import exploration as expl
 import models
 import tools
 import envs.wrappers as wrappers
 from parallel import Parallel, Damy
 
+import wandb
 import torch
 from torch import nn
 from torch import distributions as torchd
-
-
+# python dreamer.py --configs dmc_proprio --task dmc_go2_run --logdir ./logdir/dmc_go2_run
+# python dreamer.py --configs dmc_proprio --task dmc_hopper_hop --logdir ./logdir/hopper_hop_random_5000
+# python dreamer.py --configs dmc_proprio --task dmc_panda_grasp --logdir ./logdir/dmc_panda_grasp
+# python dreamer.py --configs dmc_proprio --task dmc_cheetah_run --logdir ./logdir/dmc_cheetah_run  4-5
+# python dreamer.py --configs dmc_proprio --task dmc_reacher_hard --logdir /home/chenjiehao/projects/dreamerv3_torch_ver/logdir/bouncingball_6000/  4-3
+# python dreamer.py --configs dmc_proprio --task dmc_cheetah_run --logdir ./logdir/dmc_cheetah_run_mixed
+# python dreamer.py --configs dmc_proprio --task dmc_humanoid_walk --logdir ./logdir/dmc_humanoid_walk   7
+# python dreamer.py --configs dmc_proprio --task dmc_cartpole_swingup --logdir /home/chenjiehao/projects/dreamerv3_torch_ver/logdir/dmc_cartpole_swingup_new
 to_np = lambda x: x.detach().cpu().numpy()
 
 
@@ -38,50 +52,64 @@ class Dreamer(nn.Module):
         self._should_expl = tools.Until(int(config.expl_until / config.action_repeat))
         self._metrics = {}
         # this is update step
-        self._step = logger.step // config.action_repeat
+        # self._step = logger.step // config.action_repeat
+        self._step = 0
         self._update_count = 0
         self._dataset = dataset
         self._wm = models.WorldModel(obs_space, act_space, self._step, config)
-        self._task_behavior = models.ImagBehavior(config, self._wm)
-        if (
-            config.compile and os.name != "nt"
-        ):  # compilation is not supported on windows
-            self._wm = torch.compile(self._wm)
-            self._task_behavior = torch.compile(self._task_behavior)
-        reward = lambda f, s, a: self._wm.heads["reward"](f).mean()
-        self._expl_behavior = dict(
-            greedy=lambda: self._task_behavior,
-            random=lambda: expl.Random(config, act_space),
-            plan2explore=lambda: expl.Plan2Explore(config, self._wm, reward),
-        )[config.expl_behavior]().to(self._config.device)
+        self._logger = SummaryWriter(log_dir=self._config.logdir)
+        self.scheduler = None # torch.optim.lr_scheduler.CosineAnnealingLR(self._wm._model_opt._opt, T_max=300, eta_min=1e-8)
+
+        self.best_loss = torch.inf
+        eval_path = config.offline_traindir + f"seq-{config.task}-{config.act_mode}-test.npz" # '/scorpio/home/yubei-stu-2/smallworld/seq-spin-zero-test.npz'
+        eval_data = np.load(eval_path)
+        is_first = np.zeros_like(eval_data['action'])
+        is_first[:, 0] = 1
+        self.eval_data = {'actions': torch.tensor(eval_data['action'][:, :, None], device='cuda:0'),
+                          'is_first': torch.tensor(is_first[:, :, None], device='cuda:0'),}
+        if config.nq != 0:
+            self.eval_data['targets'] = {'position': torch.tensor(eval_data['obs'][:, :, :config.nq], device='cuda:0'), 
+                                         'velocity': torch.tensor(eval_data['obs'][:, :, config.nq:], device='cuda:0')}
+        else:
+            self.eval_data['targets'] = {'state': torch.tensor(eval_data['obs'], device='cuda:0'),}
+        self.eval_target = torch.tensor(eval_data['obs'], device='cuda:0')
+
 
     def __call__(self, obs, reset, state=None, training=True):
         step = self._step
         if training:
-            steps = (
-                self._config.pretrain
-                if self._should_pretrain()
-                else self._should_train(step)
-            )
+            if self._update_count % 1000 == 0:
+                condition_steps = 10
+                state_prediction, _ = self._wm.propiro_pred(self.eval_data, condition_steps=condition_steps)
+                eval_loss = torch.nn.MSELoss()(state_prediction, self.eval_target[:, condition_steps:, :])
+                wandb.log({'eval_loss': eval_loss}, step=self._update_count)
+                if self.best_loss > eval_loss:
+                    self.best_loss = eval_loss
+                    wandb.log({'best_img_loss': self.best_loss}, step=self._update_count)
+
+            steps = 200 # 100
             for _ in range(steps):
                 self._train(next(self._dataset))
                 self._update_count += 1
                 self._metrics["update_count"] = self._update_count
-            if self._should_log(step):
+            if self.scheduler:
+                self.scheduler.step()
+
+            if True:
                 for name, values in self._metrics.items():
-                    self._logger.scalar(name, float(np.mean(values)))
-                    self._metrics[name] = []
+                    # 记录每个 metric 的标量值到 TensorBoard
+                    self._logger.add_scalar(name, float(np.mean(values)), self._update_count)
+                    wandb.log({name: float(np.mean(values))}, step=self._update_count)
+                    self._metrics[name] = []  # 重置 metrics
+
+                # 如果启用了 video 预测日志
                 if self._config.video_pred_log:
                     openl = self._wm.video_pred(next(self._dataset))
-                    self._logger.video("train_openl", to_np(openl))
-                self._logger.write(fps=True)
+                    self._logger.add_video("train_openl", to_np(openl), global_step=self._update_count)
 
-        policy_output, state = self._policy(obs, state, training)
+                self._logger.flush()  # 确保日志及时写入
 
-        if training:
-            self._step += len(reset)
-            self._logger.step = self._config.action_repeat * self._step
-        return policy_output, state
+            
 
     def _policy(self, obs, state, training):
         if state is None:
@@ -115,17 +143,13 @@ class Dreamer(nn.Module):
         return policy_output, state
 
     def _train(self, data):
+        if len(data['action'].shape) < 3:
+            data['action'] = data['action'][..., None]
         metrics = {}
         post, context, mets = self._wm._train(data)
         metrics.update(mets)
         start = post
-        reward = lambda f, s, a: self._wm.heads["reward"](
-            self._wm.dynamics.get_feat(s)
-        ).mode()
-        metrics.update(self._task_behavior._train(start, reward)[-1])
-        if self._config.expl_behavior != "greedy":
-            mets = self._expl_behavior.train(start, context, data)[-1]
-            metrics.update({"expl_" + key: value for key, value in mets.items()})
+        reward = lambda f, s, a: self._wm.heads["reward"](self._wm.dynamics.get_feat(s)).mode()
         for name, value in metrics.items():
             if not name in self._metrics.keys():
                 self._metrics[name] = [value]
@@ -207,7 +231,8 @@ def main(config):
     tools.set_seed_everywhere(config.seed)
     if config.deterministic_run:
         tools.enable_deterministic_run()
-    logdir = pathlib.Path(config.logdir).expanduser()
+    project_dir = f"{config.task}-{config.act_mode}-{config.comment}"
+    logdir = pathlib.Path(config.logdir + project_dir).expanduser()
     config.traindir = config.traindir or logdir / "train_eps"
     config.evaldir = config.evaldir or logdir / "eval_eps"
     config.steps //= config.action_repeat
@@ -223,29 +248,66 @@ def main(config):
     # step in logger is environmental step
     logger = tools.Logger(logdir, config.action_repeat * step)
 
+    wandb.init(
+        project='dreamer_torch_sw',
+        name=project_dir,  # 指定项目名
+        config=config,
+        settings=wandb.Settings(      # 不记录system status
+            _disable_stats=True,      # 禁用系统状态监控
+            _disable_meta=True        # 禁用元数据收集
+        )
+    )
+    import gymnasium as gym
+    if config.nq != 0:
+        action_space = gym.spaces.Box(-1, 1, dtype=np.float32)
+        obs_space = gym.spaces.Dict({
+                            "position": gym.spaces.Box(-np.inf, np.inf, (config.nq,), dtype=np.float32),
+                            "velocity": gym.spaces.Box(-np.inf, np.inf, (config.nv,), dtype=np.float32)
+                        })
+    elif 'Panda' in config.task:
+        import panda_gym
+        env = gym.make(f"{config.task}-v3")
+        action_space = env.action_space
+        obs_space = gym.spaces.Dict({'state': gym.spaces.Box(-np.inf, np.inf, (24,), dtype=np.float32),})
+        print("obs_space ", obs_space)
+    elif 'go' in config.task:
+        action_space = gym.spaces.Discrete(361)
+        obs_space = gym.spaces.Dict({'state': gym.spaces.Box(-np.inf, np.inf, (363,), dtype=np.float32),})
+        print("obs_space ", obs_space)
+    else:
+        import ale_py
+        env = gym.make('ALE/' + config.task, obs_type="ram")
+        action_space = env.action_space
+        obs_space = gym.spaces.Dict({'state': env.observation_space,})
+        # Box(0, 255, (210, 160, 3), uint8) for atari image
+
     print("Create envs.")
     if config.offline_traindir:
         directory = config.offline_traindir.format(**vars(config))
     else:
         directory = config.traindir
-    train_eps = tools.load_episodes(directory, limit=config.dataset_size)
+    train_eps = tools.load_episodes_single(config.offline_traindir + f"seq-{config.task}-{config.act_mode}.npz",
+                                            nq=config.nq, limit=config.dataset_size)
     if config.offline_evaldir:
         directory = config.offline_evaldir.format(**vars(config))
     else:
         directory = config.evaldir
-    eval_eps = tools.load_episodes(directory, limit=1)
-    make = lambda mode, id: make_env(config, mode, id)
-    train_envs = [make("train", i) for i in range(config.envs)]
-    eval_envs = [make("eval", i) for i in range(config.envs)]
-    if config.parallel:
-        train_envs = [Parallel(env, "process") for env in train_envs]
-        eval_envs = [Parallel(env, "process") for env in eval_envs]
-    else:
-        train_envs = [Damy(env) for env in train_envs]
-        eval_envs = [Damy(env) for env in eval_envs]
-    acts = train_envs[0].action_space
+    eval_eps = tools.load_episodes(directory, limit=100000)
+    # make = lambda mode, id: make_env(config, mode, id)
+    # train_envs = [make("train", i) for i in range(config.envs)]
+    # eval_envs = [make("eval", i) for i in range(config.envs)]
+    # if config.parallel:
+    #     train_envs = [Parallel(env, "process") for env in train_envs]
+    #     eval_envs = [Parallel(env, "process") for env in eval_envs]
+    # else:
+    #     train_envs = [Damy(env) for env in train_envs]
+    #     eval_envs = [Damy(env) for env in eval_envs]
+    acts = action_space
     print("Action Space", acts)
-    config.num_actions = acts.n if hasattr(acts, "n") else acts.shape[0]
+    if 'Panda' in config.task:
+        config.num_actions = 3 # acts.n if hasattr(acts, "n") else acts.shape[0]
+    else: 
+        config.num_actions = 1
 
     state = None
     if not config.offline_traindir:
@@ -285,8 +347,8 @@ def main(config):
     train_dataset = make_dataset(train_eps, config)
     eval_dataset = make_dataset(eval_eps, config)
     agent = Dreamer(
-        train_envs[0].observation_space,
-        train_envs[0].action_space,
+        obs_space,
+        action_space,
         config,
         logger,
         train_dataset,
@@ -298,39 +360,50 @@ def main(config):
         tools.recursively_load_optim_state_dict(agent, checkpoint["optims_state_dict"])
         agent._should_pretrain._once = False
 
+    if config.from_ckpt:
+        checkpoint = torch.load(config.from_ckpt)
+        agent.load_state_dict(checkpoint["agent_state_dict"])
+        tools.recursively_load_optim_state_dict(agent, checkpoint["optims_state_dict"])
+        agent._should_pretrain._once = False
+
     # make sure eval will be executed once after config.steps
-    while agent._step < config.steps + config.eval_every:
+    while True:
         logger.write()
         if config.eval_episode_num > 0:
             print("Start evaluation.")
-            eval_policy = functools.partial(agent, training=False)
-            tools.simulate(
-                eval_policy,
-                eval_envs,
-                eval_eps,
-                config.evaldir,
-                logger,
-                is_eval=True,
-                episodes=config.eval_episode_num,
-            )
-            if config.video_pred_log:
-                video_pred = agent._wm.video_pred(next(eval_dataset))
-                logger.video("eval_openl", to_np(video_pred))
-        print("Start training.")
-        state = tools.simulate(
-            agent,
-            train_envs,
-            train_eps,
-            config.traindir,
-            logger,
-            limit=config.dataset_size,
-            steps=config.eval_every,
-            state=state,
-        )
+            # eval_policy = functools.partial(agent, training=False)
+            # tools.simulate(
+            #     eval_policy,
+            #     eval_envs,
+            #     eval_eps,
+            #     config.evaldir,
+            #     logger,
+            #     is_eval=True,
+            #     episodes=config.eval_episode_num,
+            # )
+            # if config.video_pred_log:
+            #     video_pred = agent._wm.video_pred(next(eval_dataset))
+            #     logger.video("eval_openl", to_np(video_pred))
+        # print("Start training.")
+        # state = tools.simulate(
+        #     agent,
+        #     train_envs,
+        #     train_eps,
+        #     config.traindir,
+        #     logger,
+        #     limit=config.dataset_size,
+        #     steps=config.eval_every,
+        #     state=state,
+        # )
+        agent(None, False)
         items_to_save = {
             "agent_state_dict": agent.state_dict(),
             "optims_state_dict": tools.recursively_collect_optim_state_dict(agent),
         }
+        if agent._update_count >= config.checkpt_every:
+            print(f"save ckpt at {agent._update_count}")
+            torch.save(items_to_save, logdir / f"ckpt{agent._update_count}.pt")
+            config.checkpt_every *= 2
         torch.save(items_to_save, logdir / "latest.pt")
     for env in train_envs + eval_envs:
         try:
@@ -343,7 +416,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--configs", nargs="+")
     args, remaining = parser.parse_known_args()
-    configs = yaml.safe_load(
+    configs = yaml.load(
         (pathlib.Path(sys.argv[0]).parent / "configs.yaml").read_text()
     )
 
