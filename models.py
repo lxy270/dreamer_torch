@@ -108,7 +108,7 @@ class WorldModel(nn.Module):
             cont=config.cont_head["loss_scale"],
         )
 
-    def _train(self, data):
+    def _train(self, data, step=-1):
         # action (batch_size, batch_length, act_dim)
         # image (batch_size, batch_length, h, w, ch)
         # reward (batch_size, batch_length)
@@ -152,7 +152,7 @@ class WorldModel(nn.Module):
                     for key, value in losses.items()
                 }
                 model_loss = sum(scaled.values()) + kl_loss
-            metrics = self._model_opt(torch.mean(model_loss), self.named_parameters()) # name_param for grad check
+            metrics = self._model_opt(torch.mean(model_loss), self.named_parameters(), step=step) # name_param for grad check
 
         metrics.update({f"{name}_loss": to_np(loss) for name, loss in losses.items()})
         metrics["kl_free"] = kl_free

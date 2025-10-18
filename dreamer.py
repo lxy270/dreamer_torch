@@ -58,6 +58,7 @@ class Dreamer(nn.Module):
         self._dataset = dataset
         self._wm = models.WorldModel(obs_space, act_space, self._step, config)
         self._logger = SummaryWriter(log_dir=self._config.logdir)
+        self.update_best_ckpt = False
         self.scheduler = None # torch.optim.lr_scheduler.CosineAnnealingLR(self._wm._model_opt._opt, T_max=300, eta_min=1e-8)
 
         self.best_loss = torch.inf
@@ -86,6 +87,7 @@ class Dreamer(nn.Module):
                 if self.best_loss > eval_loss:
                     self.best_loss = eval_loss
                     wandb.log({'best_img_loss': self.best_loss}, step=self._update_count)
+                    self.update_best_ckpt = True
 
             steps = 200 # 100
             for _ in range(steps):
@@ -146,7 +148,7 @@ class Dreamer(nn.Module):
         if len(data['action'].shape) < 3:
             data['action'] = data['action'][..., None]
         metrics = {}
-        post, context, mets = self._wm._train(data)
+        post, context, mets = self._wm._train(data, self._update_count)
         metrics.update(mets)
         start = post
         reward = lambda f, s, a: self._wm.heads["reward"](self._wm.dynamics.get_feat(s)).mode()
@@ -264,11 +266,17 @@ def main(config):
                             "position": gym.spaces.Box(-np.inf, np.inf, (config.nq,), dtype=np.float32),
                             "velocity": gym.spaces.Box(-np.inf, np.inf, (config.nv,), dtype=np.float32)
                         })
-    elif 'Panda' in config.task:
+    elif 'PandaPush' in config.task:
         import panda_gym
         env = gym.make(f"{config.task}-v3")
         action_space = env.action_space
         obs_space = gym.spaces.Dict({'state': gym.spaces.Box(-np.inf, np.inf, (24,), dtype=np.float32),})
+        print("obs_space ", obs_space)
+    elif 'PandaStack' in config.task:
+        import panda_gym
+        env = gym.make(f"{config.task}-v3")
+        action_space = env.action_space
+        obs_space = gym.spaces.Dict({'state': gym.spaces.Box(-np.inf, np.inf, (43,), dtype=np.float32),})
         print("obs_space ", obs_space)
     elif 'go' in config.task:
         action_space = gym.spaces.Discrete(361)
@@ -280,6 +288,7 @@ def main(config):
         action_space = env.action_space
         obs_space = gym.spaces.Dict({'state': env.observation_space,})
         # Box(0, 255, (210, 160, 3), uint8) for atari image
+
 
     print("Create envs.")
     if config.offline_traindir:
@@ -304,8 +313,10 @@ def main(config):
     #     eval_envs = [Damy(env) for env in eval_envs]
     acts = action_space
     print("Action Space", acts)
-    if 'Panda' in config.task:
+    if 'PandaPush' in config.task:
         config.num_actions = 3 # acts.n if hasattr(acts, "n") else acts.shape[0]
+    elif 'PandaStack' in config.task:
+        config.num_actions = 4
     else: 
         config.num_actions = 1
 
@@ -354,7 +365,9 @@ def main(config):
         train_dataset,
     ).to(config.device)
     agent.requires_grad_(requires_grad=False)
+
     if (logdir / "latest.pt").exists():
+        print("load latest ckpt from: ", logdir / "latest.pt")
         checkpoint = torch.load(logdir / "latest.pt")
         agent.load_state_dict(checkpoint["agent_state_dict"])
         tools.recursively_load_optim_state_dict(agent, checkpoint["optims_state_dict"])
@@ -400,10 +413,14 @@ def main(config):
             "agent_state_dict": agent.state_dict(),
             "optims_state_dict": tools.recursively_collect_optim_state_dict(agent),
         }
-        if agent._update_count >= config.checkpt_every:
-            print(f"save ckpt at {agent._update_count}")
-            torch.save(items_to_save, logdir / f"ckpt{agent._update_count}.pt")
-            config.checkpt_every *= 2
+        # if agent._update_count >= config.checkpt_every:
+        #     print(f"save ckpt at {agent._update_count}")
+        #     torch.save(items_to_save, logdir / f"ckpt{agent._update_count}.pt")
+        #     config.checkpt_every *= 2
+        if agent._update_count >= 10000 and agent.update_best_ckpt:
+            print(f"save best ckpt at {agent._update_count}")
+            torch.save(items_to_save, logdir / f"best.pt")
+            agent.update_best_ckpt = False
         torch.save(items_to_save, logdir / "latest.pt")
     for env in train_envs + eval_envs:
         try:

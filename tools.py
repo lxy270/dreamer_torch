@@ -799,7 +799,7 @@ class Optimizer:
         }[opt]()
         self._scaler = torch.amp.GradScaler('cuda')
 
-    def __call__(self, loss, params, retain_graph=True):
+    def __call__(self, loss, params, step=-1, retain_graph=True):
         # params = list(params)
         named_param = list(params)                
         params = [p for _, p in named_param] 
@@ -817,15 +817,18 @@ class Optimizer:
             if p.grad is None:
                 continue
             g = p.grad.detach()
-            # 先快速布尔检查
             if torch.isnan(g).any():
                 bad = True
-                print('nan grad ', name)
+                print(f'[{step}] nan grad ', name)
             if torch.isinf(g).any():
                 bad = True
-                print('inf grad ', name)
+                print(f'[{step}] inf grad ', name)
         if bad:
-            exit()
+            # 清梯度，避免脏梯度污染下一步
+            self._opt.zero_grad(set_to_none=True)
+            # 让 GradScaler 自行回退 scale（它会对 inf/nan 都回退）
+            self._scaler.update()
+            return metrics
 
         norm = torch.nn.utils.clip_grad_norm_(params, self._clip)
         metrics[f"{self._name}_grad_norm"] = to_np(norm)
