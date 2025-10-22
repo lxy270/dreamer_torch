@@ -41,6 +41,7 @@ to_np = lambda x: x.detach().cpu().numpy()
 
 class Dreamer(nn.Module):
     def __init__(self, obs_space, act_space, config, logger, dataset):
+        self.eval_tvar = True
         super(Dreamer, self).__init__()
         self._config = config
         self._logger = logger
@@ -62,8 +63,16 @@ class Dreamer(nn.Module):
         self.scheduler = None # torch.optim.lr_scheduler.CosineAnnealingLR(self._wm._model_opt._opt, T_max=300, eta_min=1e-8)
 
         self.best_loss = torch.inf
-        eval_path = config.offline_traindir + f"seq-{config.task}-{config.act_mode}-test.npz" # '/scorpio/home/yubei-stu-2/smallworld/seq-spin-zero-test.npz'
-        eval_data = np.load(eval_path)
+        if self.eval_tvar:
+            eval_path = config.offline_traindir + f"seq-{config.task}-{config.act_mode}.npz"
+            eval_data =  dict(np.load(eval_path, allow_pickle=True))
+            for k in eval_data.keys():
+                if k == 'metadata':
+                    continue
+                eval_data[k] = eval_data[k][:100]
+        else:
+            eval_path = config.offline_traindir + f"seq-{config.task}-{config.act_mode}-test.npz" # '/scorpio/home/yubei-stu-2/smallworld/seq-spin-zero-test.npz'
+            eval_data = np.load(eval_path)
         is_first = np.zeros_like(eval_data['action'])
         is_first[:, 0] = 1
         self.eval_data = {'actions': torch.tensor(eval_data['action'][:, :, None], device='cuda:0'),
@@ -72,11 +81,27 @@ class Dreamer(nn.Module):
             self.eval_data['targets'] = {'position': torch.tensor(eval_data['obs'][:, :, :config.nq], device='cuda:0'), 
                                          'velocity': torch.tensor(eval_data['obs'][:, :, config.nq:], device='cuda:0')}
         else:
-            self.eval_data['targets'] = {'state': torch.tensor(eval_data['obs'], device='cuda:0'),}
+            self.eval_data['targets'] = {'state': torch.tensor(eval_data['obs'], device='cuda:0', dtype=torch.float32),}
         self.eval_target = torch.tensor(eval_data['obs'], device='cuda:0')
 
 
     def __call__(self, obs, reset, state=None, training=True):
+        if self.eval_tvar:
+            condition_steps = 10
+            state_prediction, _ = self._wm.propiro_pred(self.eval_data, condition_steps=condition_steps)
+            # eval_loss = torch.nn.MSELoss()(state_prediction, self.eval_target[:, condition_steps:, :])
+            eval_loss = torch.nn.functional.mse_loss(state_prediction, self.eval_target[:, condition_steps:, :], reduction="none")
+            print('eval shape', eval_loss.shape)
+
+            tvar = [1, 5, 10, 100, eval_loss.shape[1]]
+            tloss = []
+            for idx in tvar:
+                tloss.append(eval_loss[:, :idx].mean())
+            print('tloss ', tloss)
+            savepath = f'/scorpio/home/yubei-stu-2/smallworld/results_tvar/dreamer-{self._config.task}-{self._config.act_mode}.pt'
+            torch.save({'tvar': tvar, 'tloss': tloss}, savepath)
+            exit()
+
         step = self._step
         if training:
             if self._update_count % 1000 == 0:
@@ -282,6 +307,14 @@ def main(config):
         action_space = gym.spaces.Discrete(361)
         obs_space = gym.spaces.Dict({'state': gym.spaces.Box(-np.inf, np.inf, (363,), dtype=np.float32),})
         print("obs_space ", obs_space)
+    elif 'Maze' in config.task:
+        action_space = gym.spaces.Discrete(6)
+        obs_space = gym.spaces.Dict({'state': gym.spaces.Box(-np.inf, np.inf, (4,), dtype=np.float32),})
+        print("maze obs_space ", obs_space)
+    elif 'Point3D' in config.task:
+        action_space = gym.spaces.Discrete(6)
+        obs_space = gym.spaces.Dict({'state': gym.spaces.Box(-np.inf, np.inf, (12,), dtype=np.float32),})
+        print("point3d obs_space ", obs_space)
     else:
         import ale_py
         env = gym.make('ALE/' + config.task, obs_type="ram")
@@ -313,6 +346,7 @@ def main(config):
     #     eval_envs = [Damy(env) for env in eval_envs]
     acts = action_space
     print("Action Space", acts)
+
     if 'PandaPush' in config.task:
         config.num_actions = 3 # acts.n if hasattr(acts, "n") else acts.shape[0]
     elif 'PandaStack' in config.task:
@@ -378,6 +412,7 @@ def main(config):
         agent.load_state_dict(checkpoint["agent_state_dict"])
         tools.recursively_load_optim_state_dict(agent, checkpoint["optims_state_dict"])
         agent._should_pretrain._once = False
+        print('ckpt load from ', config.from_ckpt)
 
     # make sure eval will be executed once after config.steps
     while True:

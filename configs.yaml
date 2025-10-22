@@ -1,12 +1,12 @@
 defaults:
 
-  nq: 0 # dm_phy when != 0
+  nq: 7 # dm_phy when != 0
   nv: 6
-  model_lr: 1e-7 # 1e-7/5
-  task: 'PandaStack' # 'spin' # 'PandaPush' # 'Pong-v5' # 'rotate_center' # 'dmc_reacher_hard'
-  act_mode: 'random' # 'random' / 'zero'
-  comment: 'eval-slr'
-  from_ckpt: '' # '/scorpio/home/yubei-stu-2/dreamerv3_torch_ver/logdir/sw_spin-zero-1/ckpt32000.pt'
+  model_lr: 1e-5 # 1e-7/5
+  task: 'spin' # 'PandaStack' # 'spin' # 'PandaPush' # 'Boxing-v5' # 'rotate_center' # 'dmc_reacher_hard'
+  act_mode: 'zero' # 'random' / 'zero'
+  comment: 'tvar'
+  from_ckpt: '/scorpio/home/yubei-stu-2/dreamerv3_torch_ver/logdir/spin-zero-eval_slr/ckpt64000.pt' # ''  # '/scorpio/home/yubei-stu-2/dreamerv3_torch_ver/logdir/sw_spin-zero-1/ckpt32000.pt'
   checkpt_every: 20000
   offline_traindir: '/scorpio/home/yubei-stu-2/dreamerv3_torch_ver/data/'
   logdir: '/scorpio/home/yubei-stu-2/dreamerv3_torch_ver/logdir/'
