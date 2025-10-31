@@ -15,7 +15,7 @@ from dreamer import Dreamer, make_env
 
 def load_dreamer(task, ckpt_path, device):
     print("load_dreamer")
-    config_path = '/scorpio/home/yubei-stu-2/dreamerv3_torch_ver/configs.yaml'
+    config_path = 'configs.yaml'
     with open(config_path, 'r') as file:
         config = yaml.load(file)
     defaults = {}

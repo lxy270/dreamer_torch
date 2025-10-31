@@ -40,8 +40,8 @@ to_np = lambda x: x.detach().cpu().numpy()
 
 
 class Dreamer(nn.Module):
-    def __init__(self, obs_space, act_space, config, logger, dataset):
-        self.eval_tvar = True
+    def __init__(self, obs_space, act_space, config, logger, dataset, discrete_action=-1):
+        self.eval_tvar = False
         super(Dreamer, self).__init__()
         self._config = config
         self._logger = logger
@@ -71,12 +71,20 @@ class Dreamer(nn.Module):
                     continue
                 eval_data[k] = eval_data[k][:100]
         else:
-            eval_path = config.offline_traindir + f"seq-{config.task}-{config.act_mode}-test.npz" # '/scorpio/home/yubei-stu-2/smallworld/seq-spin-zero-test.npz'
+            eval_path = config.offline_traindir + f"seq-{config.task}-{config.act_mode}-test.npz"
             eval_data = np.load(eval_path)
-        is_first = np.zeros_like(eval_data['action'])
+        if discrete_action != -1:
+            action = eval_data['action'].squeeze()
+            onehot = np.zeros((*action.shape, discrete_action), dtype=np.float32)
+            idx = np.indices(action.shape) 
+            onehot[(*idx, action)] = 1
+            eval_action = onehot
+        else:
+            eval_action = eval_data['action'][:, :, None]
+        is_first = np.zeros_like(eval_data['action'][:, :, None])
         is_first[:, 0] = 1
-        self.eval_data = {'actions': torch.tensor(eval_data['action'][:, :, None], device='cuda:0'),
-                          'is_first': torch.tensor(is_first[:, :, None], device='cuda:0'),}
+        self.eval_data = {'actions': torch.tensor(eval_action, device='cuda:0'),
+                          'is_first': torch.tensor(is_first, device='cuda:0'),}
         if config.nq != 0:
             self.eval_data['targets'] = {'position': torch.tensor(eval_data['obs'][:, :, :config.nq], device='cuda:0'), 
                                          'velocity': torch.tensor(eval_data['obs'][:, :, config.nq:], device='cuda:0')}
@@ -285,7 +293,9 @@ def main(config):
         )
     )
     import gymnasium as gym
+    discrete_action = -1
     if config.nq != 0:
+        config.num_actions = 1
         action_space = gym.spaces.Box(-1, 1, dtype=np.float32)
         obs_space = gym.spaces.Dict({
                             "position": gym.spaces.Box(-np.inf, np.inf, (config.nq,), dtype=np.float32),
@@ -293,32 +303,45 @@ def main(config):
                         })
     elif 'PandaPush' in config.task:
         import panda_gym
-        env = gym.make(f"{config.task}-v3")
+        config.num_actions = 3
+        env = gym.make(f"PandaPush-v3")
+        print('dt', env.unwrapped.sim.dt)
+        print('substep', env.unwrapped.sim.n_substeps)
         action_space = env.action_space
         obs_space = gym.spaces.Dict({'state': gym.spaces.Box(-np.inf, np.inf, (24,), dtype=np.float32),})
         print("obs_space ", obs_space)
     elif 'PandaStack' in config.task:
         import panda_gym
-        env = gym.make(f"{config.task}-v3")
+        config.num_actions = 4
+        env = gym.make(f"PandaStack-v3")
+        print('dt', env.unwrapped.sim.dt)
+        print('substep', env.unwrapped.sim.n_substeps)
         action_space = env.action_space
         obs_space = gym.spaces.Dict({'state': gym.spaces.Box(-np.inf, np.inf, (43,), dtype=np.float32),})
         print("obs_space ", obs_space)
     elif 'go' in config.task:
-        action_space = gym.spaces.Discrete(361)
+        discrete_action = 361 # todo
+        config.num_actions = 361
+        action_space = gym.spaces.Box(low=0, high=1, shape=(361,), dtype=np.float32) # gym.spaces.Discrete(361)
         obs_space = gym.spaces.Dict({'state': gym.spaces.Box(-np.inf, np.inf, (363,), dtype=np.float32),})
         print("obs_space ", obs_space)
     elif 'Maze' in config.task:
-        action_space = gym.spaces.Discrete(6)
+        discrete_action = 6
+        config.num_actions = 6
+        action_space = gym.spaces.Box(low=0, high=1, shape=(6,), dtype=np.float32) # gym.spaces.Discrete(6)
         obs_space = gym.spaces.Dict({'state': gym.spaces.Box(-np.inf, np.inf, (4,), dtype=np.float32),})
         print("maze obs_space ", obs_space)
     elif 'Point3D' in config.task:
-        action_space = gym.spaces.Discrete(6)
+        discrete_action = 6
+        config.num_actions = 6
+        action_space = gym.spaces.Box(low=0, high=1, shape=(6,), dtype=np.float32) # gym.spaces.Discrete(6)
         obs_space = gym.spaces.Dict({'state': gym.spaces.Box(-np.inf, np.inf, (12,), dtype=np.float32),})
         print("point3d obs_space ", obs_space)
     else:
         import ale_py
+        discrete_action = config.num_actions = 18
         env = gym.make('ALE/' + config.task, obs_type="ram")
-        action_space = env.action_space
+        action_space = gym.spaces.Box(low=0, high=1, shape=(6,), dtype=np.float32) # env.action_space
         obs_space = gym.spaces.Dict({'state': env.observation_space,})
         # Box(0, 255, (210, 160, 3), uint8) for atari image
 
@@ -329,7 +352,7 @@ def main(config):
     else:
         directory = config.traindir
     train_eps = tools.load_episodes_single(config.offline_traindir + f"seq-{config.task}-{config.act_mode}.npz",
-                                            nq=config.nq, limit=config.dataset_size)
+                                            nq=config.nq, limit=config.dataset_size, discrete_action=discrete_action)
     if config.offline_evaldir:
         directory = config.offline_evaldir.format(**vars(config))
     else:
@@ -346,13 +369,6 @@ def main(config):
     #     eval_envs = [Damy(env) for env in eval_envs]
     acts = action_space
     print("Action Space", acts)
-
-    if 'PandaPush' in config.task:
-        config.num_actions = 3 # acts.n if hasattr(acts, "n") else acts.shape[0]
-    elif 'PandaStack' in config.task:
-        config.num_actions = 4
-    else: 
-        config.num_actions = 1
 
     state = None
     if not config.offline_traindir:
@@ -397,6 +413,7 @@ def main(config):
         config,
         logger,
         train_dataset,
+        discrete_action=discrete_action,
     ).to(config.device)
     agent.requires_grad_(requires_grad=False)
 

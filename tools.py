@@ -363,10 +363,15 @@ def sample_episodes(episodes, length, seed=0):
 
 from collections.abc import Mapping
 class EpisodesView(Mapping):
-    def __init__(self, path, pos_dim=7):
+    def __init__(self, path, pos_dim=7, discrete_action=-1):
         data = np.load(path)
         self.obs = data["obs"]            # (B,T,F)
-        self.action = data["action"]      # (B,T,...) or (B, ...)
+        self.action = data["action"].squeeze()      # (B,T,...) or (B, ...)
+        if discrete_action != -1:
+            onehot = np.zeros((*self.action.shape, discrete_action), dtype=np.float32)
+            idx = np.indices(self.action.shape) 
+            onehot[(*idx, self.action)] = 1
+            self.action = onehot
         B, T = self.obs.shape[:2]
         self.B, self.T, self.pos_dim = B, T, pos_dim
         self.is_first = np.r_[True, np.zeros(T-1, bool)]
@@ -406,9 +411,9 @@ class EpisodesView(Mapping):
                 "cont": self.cont,
             }
     
-def load_episodes_single(path, nq=0, limit=None, reverse=True):
+def load_episodes_single(path, nq=0, limit=None, reverse=True, discrete_action=-1):
     path = pathlib.Path(path).expanduser()
-    return EpisodesView(path, pos_dim=nq)  # 与原 OrderedDict 类似的“可迭代映射”
+    return EpisodesView(path, pos_dim=nq, discrete_action=discrete_action)  # 与原 OrderedDict 类似的“可迭代映射”
     
 def load_episodes(directory, limit=None, reverse=True):
     directory = pathlib.Path(directory).expanduser()

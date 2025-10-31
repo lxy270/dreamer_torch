@@ -49,6 +49,7 @@ class RSSM(nn.Module):
         inp_layers = []
         if self._discrete:
             inp_dim = self._stoch * self._discrete + num_actions # 32*32+action_dim=18->1042
+            print(num_actions)
         else:
             inp_dim = self._stoch + num_actions
         inp_layers.append(nn.Linear(inp_dim, self._hidden, bias=False))
@@ -237,14 +238,8 @@ class RSSM(nn.Module):
         return prior
 
     def get_stoch(self, deter):
-        if torch.isnan(deter).any():
-            print('[get stoch] deter nan')
         x = self._img_out_layers(deter)
-        if torch.isnan(deter).any():
-            print('[get stoch] _img_out_layers nan')
         stats = self._suff_stats_layer("ims", x)
-        if torch.isnan(stats['logit']).any():
-            print('[get stoch] stats nan')
         dist = self.get_dist(stats)
         return dist.mode()
 
