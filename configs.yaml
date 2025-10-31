@@ -3,7 +3,7 @@ defaults:
   nq: 0 # dm_phy when != 0
   nv: 6
   model_lr: 1e-7 # 1e-7/5
-  task: 'Point3D' # 'PandaStack' # 'spin' # 'PandaPush' # 'Boxing-v5' # 'rotate_center' # 'dmc_reacher_hard'
+  task: 'humanoid' # 'PandaStack' # 'spin' # 'PandaPush' # 'Boxing-v5' # 'rotate_center' # 'dmc_reacher_hard'
   act_mode: 'random' # 'random' / 'zero'
   comment: 'onehot-slr'
   from_ckpt: '' # '/scorpio/home/yubei-stu-2/dreamerv3_torch_ver/logdir/spin-zero-eval_slr/ckpt64000.pt' # ''  # '/scorpio/home/yubei-stu-2/dreamerv3_torch_ver/logdir/sw_spin-zero-1/ckpt32000.pt'

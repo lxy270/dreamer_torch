@@ -85,6 +85,8 @@ class Dreamer(nn.Module):
         is_first[:, 0] = 1
         self.eval_data = {'actions': torch.tensor(eval_action, device='cuda:0'),
                           'is_first': torch.tensor(is_first, device='cuda:0'),}
+        if 'humanoid' in config.task or 'reacher' in config.task:
+            self.eval_data['actions'] = self.eval_data['actions'].to(torch.float32)
         if config.nq != 0:
             self.eval_data['targets'] = {'position': torch.tensor(eval_data['obs'][:, :, :config.nq], device='cuda:0'), 
                                          'velocity': torch.tensor(eval_data['obs'][:, :, config.nq:], device='cuda:0')}
@@ -337,6 +339,14 @@ def main(config):
         action_space = gym.spaces.Box(low=0, high=1, shape=(6,), dtype=np.float32) # gym.spaces.Discrete(6)
         obs_space = gym.spaces.Dict({'state': gym.spaces.Box(-np.inf, np.inf, (12,), dtype=np.float32),})
         print("point3d obs_space ", obs_space)
+    elif 'humanoid' in config.task:
+        config.num_actions = 21
+        action_space = gym.spaces.Box(-np.inf, np.inf, (21,), dtype=np.float32)
+        obs_space = gym.spaces.Dict({'state': gym.spaces.Box(-np.inf, np.inf, (67,), dtype=np.float32),})
+    elif 'reacher' in config.task:
+        config.num_actions = 2
+        action_space = gym.spaces.Box(-np.inf, np.inf, (2,), dtype=np.float32)
+        obs_space = gym.spaces.Dict({'state': gym.spaces.Box(-np.inf, np.inf, (6,), dtype=np.float32),})
     else:
         import ale_py
         discrete_action = config.num_actions = 18
