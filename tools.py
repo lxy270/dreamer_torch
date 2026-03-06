@@ -824,10 +824,10 @@ class Optimizer:
             g = p.grad.detach()
             if torch.isnan(g).any():
                 bad = True
-                print(f'[{step}] nan grad ', name)
+                # print(f'[{step}] nan grad ', name)
             if torch.isinf(g).any():
                 bad = True
-                print(f'[{step}] inf grad ', name)
+                # print(f'[{step}] inf grad ', name)
         if bad:
             # 清梯度，避免脏梯度污染下一步
             self._opt.zero_grad(set_to_none=True)

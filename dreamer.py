@@ -296,30 +296,30 @@ def main(config):
     )
     import gymnasium as gym
     discrete_action = -1
-    if config.nq != 0:
+    if config.nq != 0: # dm_phy
         config.num_actions = 1
         action_space = gym.spaces.Box(-1, 1, dtype=np.float32)
         obs_space = gym.spaces.Dict({
                             "position": gym.spaces.Box(-np.inf, np.inf, (config.nq,), dtype=np.float32),
                             "velocity": gym.spaces.Box(-np.inf, np.inf, (config.nv,), dtype=np.float32)
                         })
-    elif 'PandaPush' in config.task:
+    elif 'PandaPush' in config.task: # changed for v2
         import panda_gym
         config.num_actions = 3
         env = gym.make(f"PandaPush-v3")
         print('dt', env.unwrapped.sim.dt)
         print('substep', env.unwrapped.sim.n_substeps)
         action_space = env.action_space
-        obs_space = gym.spaces.Dict({'state': gym.spaces.Box(-np.inf, np.inf, (24,), dtype=np.float32),})
+        obs_space = gym.spaces.Dict({'state': gym.spaces.Box(-np.inf, np.inf, (18,), dtype=np.float32),})
         print("obs_space ", obs_space)
-    elif 'PandaStack' in config.task:
+    elif 'PandaStack' in config.task:  # changed for v2
         import panda_gym
         config.num_actions = 4
         env = gym.make(f"PandaStack-v3")
         print('dt', env.unwrapped.sim.dt)
         print('substep', env.unwrapped.sim.n_substeps)
         action_space = env.action_space
-        obs_space = gym.spaces.Dict({'state': gym.spaces.Box(-np.inf, np.inf, (43,), dtype=np.float32),})
+        obs_space = gym.spaces.Dict({'state': gym.spaces.Box(-np.inf, np.inf, (31,), dtype=np.float32),})
         print("obs_space ", obs_space)
     elif 'go' in config.task:
         discrete_action = 361 # todo
