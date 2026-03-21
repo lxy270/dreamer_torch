@@ -2,6 +2,7 @@ import copy
 import sys
 import torch
 from torch import nn
+import torch.nn.functional as F
 from PIL import Image
 import os
 import networks
@@ -114,6 +115,7 @@ class WorldModel(nn.Module):
         # reward (batch_size, batch_length)
         # discount (batch_size, batch_length)
         data = self.preprocess(data)
+        metrics = {}
 
         with tools.RequiresGrad(self):
             with torch.amp.autocast('cuda', dtype=torch.float16 if self._use_amp else torch.float32):
@@ -152,7 +154,22 @@ class WorldModel(nn.Module):
                     for key, value in losses.items()
                 }
                 model_loss = sum(scaled.values()) + kl_loss
-            metrics = self._model_opt(torch.mean(model_loss), self.named_parameters(), step=step) # name_param for grad check
+
+                total_loss = torch.mean(model_loss)
+                # for multi-step loss
+                if (getattr(self._config, 'img_train_every', 0) > 0
+                        and step > 0
+                        and step % self._config.img_train_every == 0):
+                    rec_img, img_loss = self.compute_imagination_loss(
+                        data, embed,
+                        context_steps=self._config.img_condition,
+                        imagine_steps=self._config.train_imagine_steps,
+                    )
+                    total_loss = total_loss + (self._config.img_loss_weight * img_loss
+                                            + self._config.rec_img_weight * rec_img)
+                    metrics["train_img_loss"] = img_loss.item()
+                    metrics["train_rec_img"] = rec_img.item()
+            metrics.update(self._model_opt(total_loss, self.named_parameters(), step=step)) # name_param for grad check
 
         metrics.update({f"{name}_loss": to_np(loss) for name, loss in losses.items()})
         metrics["kl_free"] = kl_free
@@ -264,9 +281,48 @@ class WorldModel(nn.Module):
         # model = torch.cat([recon_state, openl_state], dim=1)
         # reward = torch.cat([reward_post, reward_prior], dim=1)
         
-        
         return openl_state, reward_prior
 
+    def compute_imagination_loss(self, data, embed, context_steps, imagine_steps):
+        B, T, _ = embed.shape
+        K = min(imagine_steps, T - context_steps)
+
+        # --- Stage 1: observe with ground truth for context ---
+        states, _ = self.dynamics.observe(
+            embed[:, :context_steps],
+            data["action"][:, :context_steps],
+            data["is_first"][:, :context_steps]
+        )
+
+        # Reconstruction loss over context window
+        feat_ctx = self.dynamics.get_feat(states)
+        if self._config.nq != 0:
+            decoded = self.heads["decoder"](feat_ctx)
+            rec_pred = torch.cat([decoded["position"].mode(), decoded["velocity"].mode()], dim=-1)
+            rec_gt = torch.cat([data["position"][:, :context_steps], data["velocity"][:, :context_steps]], dim=-1)
+        else:
+            rec_pred = self.heads["decoder"](feat_ctx)["state"].mode()
+            rec_gt = data["state"][:, :context_steps]
+        rec_loss = F.mse_loss(rec_pred, rec_gt)
+
+        # --- Stage 2: imagination without observations ---
+        init = {k: v[:, -1] for k, v in states.items()}
+        prior = self.dynamics.imagine_with_action(
+            data["action"][:, context_steps:context_steps + K], init
+        )
+        feat_img = self.dynamics.get_feat(prior)
+        if self._config.nq != 0:
+            prior_decoded = self.heads["decoder"](feat_img)
+            img_pred = torch.cat([prior_decoded["position"].mode(), prior_decoded["velocity"].mode()], dim=-1)
+            img_gt = torch.cat([data["position"][:, context_steps:context_steps + K],
+                                data["velocity"][:, context_steps:context_steps + K]], dim=-1)
+        else:
+            img_pred = self.heads["decoder"](feat_img)["state"].mode()
+            img_gt = data["state"][:, context_steps:context_steps + K]
+        img_loss = F.mse_loss(img_pred, img_gt)
+
+        return rec_loss, img_loss
+    
 
 class ImagBehavior(nn.Module):
     def __init__(self, config, world_model):

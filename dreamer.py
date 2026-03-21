@@ -60,7 +60,7 @@ class Dreamer(nn.Module):
         self._wm = models.WorldModel(obs_space, act_space, self._step, config)
         self._logger = SummaryWriter(log_dir=self._config.logdir)
         self.update_best_ckpt = False
-        self.scheduler = None # torch.optim.lr_scheduler.CosineAnnealingLR(self._wm._model_opt._opt, T_max=300, eta_min=1e-8)
+        self.scheduler = None # torch.optim.lr_scheduler.CosineAnnealingLR(self._wm._model_opt._opt, T_max=300, eta_min=1e-10)
 
         self.best_loss = torch.inf
         if self.eval_tvar:
@@ -446,30 +446,6 @@ def main(config):
         logger.write()
         if config.eval_episode_num > 0:
             print("Start evaluation.")
-            # eval_policy = functools.partial(agent, training=False)
-            # tools.simulate(
-            #     eval_policy,
-            #     eval_envs,
-            #     eval_eps,
-            #     config.evaldir,
-            #     logger,
-            #     is_eval=True,
-            #     episodes=config.eval_episode_num,
-            # )
-            # if config.video_pred_log:
-            #     video_pred = agent._wm.video_pred(next(eval_dataset))
-            #     logger.video("eval_openl", to_np(video_pred))
-        # print("Start training.")
-        # state = tools.simulate(
-        #     agent,
-        #     train_envs,
-        #     train_eps,
-        #     config.traindir,
-        #     logger,
-        #     limit=config.dataset_size,
-        #     steps=config.eval_every,
-        #     state=state,
-        # )
         agent(None, False)
         items_to_save = {
             "agent_state_dict": agent.state_dict(),
