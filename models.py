@@ -281,7 +281,7 @@ class WorldModel(nn.Module):
         # model = torch.cat([recon_state, openl_state], dim=1)
         # reward = torch.cat([reward_post, reward_prior], dim=1)
         
-        return openl_state, reward_prior
+        return openl_state, recon_state
 
     def compute_imagination_loss(self, data, embed, context_steps, imagine_steps):
         B, T, _ = embed.shape
