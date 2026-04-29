@@ -71,7 +71,10 @@ class Dreamer(nn.Module):
                     continue
                 eval_data[k] = eval_data[k][:100]
         else:
-            eval_path = config.offline_traindir + f"seq-{config.task}-{config.act_mode}-test.npz"
+            if 'tcond' in config.comment:
+                eval_path = config.offline_traindir + f"tcond-{config.task}-{config.act_mode}-test.npz"
+            else:
+                eval_path = config.offline_traindir + f"seq-{config.task}-{config.act_mode}-test.npz"
             eval_data = np.load(eval_path)
         if discrete_action != -1:
             action = eval_data['action'].squeeze()
@@ -342,7 +345,11 @@ def main(config):
     elif 'humanoid' in config.task:
         config.num_actions = 21
         action_space = gym.spaces.Box(-np.inf, np.inf, (21,), dtype=np.float32)
-        obs_space = gym.spaces.Dict({'state': gym.spaces.Box(-np.inf, np.inf, (67,), dtype=np.float32),})
+        obs_space = gym.spaces.Dict({'state': gym.spaces.Box(-np.inf, np.inf, (55,), dtype=np.float32),}) # 67 before tcond
+    elif 'cheetah' in config.task:
+        config.num_actions = 6
+        action_space = gym.spaces.Box(-np.inf, np.inf, (6,), dtype=np.float32)
+        obs_space = gym.spaces.Dict({'state': gym.spaces.Box(-np.inf, np.inf, (18,), dtype=np.float32),}) # for tcond
     elif 'reacher' in config.task:
         config.num_actions = 2
         action_space = gym.spaces.Box(-np.inf, np.inf, (2,), dtype=np.float32)
@@ -361,7 +368,13 @@ def main(config):
         directory = config.offline_traindir.format(**vars(config))
     else:
         directory = config.traindir
-    train_eps = tools.load_episodes_single(config.offline_traindir + f"seq-{config.task}-{config.act_mode}.npz",
+
+    if 'tcond' in config.comment:
+        train_path = config.offline_traindir + f"tcond-{config.task}-{config.act_mode}.npz"
+    else:
+        train_path = config.offline_traindir + f"seq-{config.task}-{config.act_mode}.npz"
+    print(f'train data path: {train_path}')
+    train_eps = tools.load_episodes_single(train_path,
                                             nq=config.nq, limit=config.dataset_size, discrete_action=discrete_action)
     if config.offline_evaldir:
         directory = config.offline_evaldir.format(**vars(config))

@@ -155,21 +155,22 @@ class WorldModel(nn.Module):
                 }
                 model_loss = sum(scaled.values()) + kl_loss
 
-                total_loss = torch.mean(model_loss)
-                # for multi-step loss
-                if (getattr(self._config, 'img_train_every', 0) > 0
-                        and step > 0
-                        and step % self._config.img_train_every == 0):
-                    rec_img, img_loss = self.compute_imagination_loss(
-                        data, embed,
-                        context_steps=self._config.img_condition,
-                        imagine_steps=self._config.train_imagine_steps,
-                    )
-                    total_loss = total_loss + (self._config.img_loss_weight * img_loss
-                                            + self._config.rec_img_weight * rec_img)
-                    metrics["train_img_loss"] = img_loss.item()
-                    metrics["train_rec_img"] = rec_img.item()
-            metrics.update(self._model_opt(total_loss, self.named_parameters(), step=step)) # name_param for grad check
+            #     total_loss = torch.mean(model_loss)
+            #     # for multi-step loss
+            #     if (getattr(self._config, 'img_train_every', 0) > 0
+            #             and step > 0
+            #             and step % self._config.img_train_every == 0):
+            #         rec_img, img_loss = self.compute_imagination_loss(
+            #             data, embed,
+            #             context_steps=self._config.img_condition,
+            #             imagine_steps=self._config.train_imagine_steps,
+            #         )
+            #         total_loss = total_loss + (self._config.img_loss_weight * img_loss
+            #                                 + self._config.rec_img_weight * rec_img)
+            #         metrics["train_img_loss"] = img_loss.item()
+            #         metrics["train_rec_img"] = rec_img.item()
+            # metrics.update(self._model_opt(total_loss, self.named_parameters(), step=step)) # name_param for grad check
+            metrics = self._model_opt(torch.mean(model_loss), self.named_parameters(), step=step) # name_param for grad check
 
         metrics.update({f"{name}_loss": to_np(loss) for name, loss in losses.items()})
         metrics["kl_free"] = kl_free
