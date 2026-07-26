@@ -174,7 +174,7 @@ class RSSM(nn.Module):
             )
         return dist
 
-    def obs_step(self, prev_state, prev_action, embed, is_first, sample=False):
+    def obs_step(self, prev_state, prev_action, embed, is_first, sample=False): #todo
         # initialize all prev_state
         if prev_state == None or torch.sum(is_first) == len(is_first):
             prev_state = self.initial(len(is_first))
@@ -208,7 +208,7 @@ class RSSM(nn.Module):
         post = {"stoch": stoch, "deter": prior["deter"], **stats}
         return post, prior
 
-    def img_step(self, prev_state, prev_action, sample=False):
+    def img_step(self, prev_state, prev_action, sample=False): #todo, train true, infer false
         # (batch, stoch, discrete_num)
         prev_stoch = prev_state["stoch"]
         if self._discrete:
@@ -748,6 +748,8 @@ class MLP(nn.Module):
             dist = tools.DiscDist(logits=mean, device=self._device)
         elif dist == "symlog_mse":
             dist = tools.SymlogDist(mean)
+        elif dist == "mse":
+            dist = tools.MSEDist(mean)
         else:
             raise NotImplementedError(dist)
         return dist

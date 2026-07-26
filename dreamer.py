@@ -44,6 +44,65 @@ class Dreamer(nn.Module):
         self.eval_tvar = False
         super(Dreamer, self).__init__()
         self._config = config
+        # Previous per-feature statistics from cheetah_run_state_random.npz:
+        self.obs_mean = [
+            -0.8466714024543762, -0.11200540512800217,
+            0.05405983328819275, 0.0002913616772275418,
+            0.038189925253391266, -0.03948764503002167,
+            -0.081931933760643, -0.10421689599752426,
+            -0.09087486565113068, -0.17118185758590698,
+            -2.5322346118628047e-05, 0.001493218820542097,
+            0.0010638055391609669, 0.004946540575474501,
+            -0.0028293728828430176, -0.013455092906951904,
+            -0.012141266837716103, -0.01069149561226368,
+        ]
+        self.obs_std = [
+            0.6688496470451355, 0.034241463989019394,
+            0.06354093551635742, 0.15606531500816345,
+            0.1735278069972992, 0.18075938522815704,
+            0.09739918261766434, 0.16425222158432007,
+            0.19257119297981262, 0.5030624270439148,
+            0.45922034978866577, 1.1172008514404297,
+            3.821852207183838, 5.003693580627441,
+            5.02598762512207, 2.693417549133301,
+            3.884706974029541, 4.176016330718994,
+        ]
+
+        # Active per-feature statistics from
+        # /scorpio/home/yubei-stu-2/tcond/data/cheetah_run_state_intermix.npz.
+        # These follow env_humanoid.py: concatenate [qpos, qvel], flatten the
+        # trajectory/time axes, then compute per-feature mean and std (+ 1e-8).
+        # self.obs_mean = [
+        #     20.37139129638672, -0.07417750358581543,
+        #     0.5046687722206116, -0.06243321672081947,
+        #     -0.04251820966601372, -0.07586397230625153,
+        #     -0.22625090181827545, 0.0069607398472726345,
+        #     -0.06271885335445404, 4.119309902191162,
+        #     0.002694385591894388, 0.0753093734383583,
+        #     0.007443673443049192, -0.008049629628658295,
+        #     0.013028179295361042, -0.10203664749860764,
+        #     0.03597825765609741, -0.006187621969729662,
+        # ]
+        # self.obs_std = [
+        #     18.07161521911621, 0.12715467810630798,
+        #     1.2095049619674683, 0.30905407667160034,
+        #     0.38757970929145813, 0.30774742364883423,
+        #     0.27587181329727173, 0.2588687837123871,
+        #     0.23161032795906067, 3.484938144683838,
+        #     0.7637878060340881, 1.7436968088150024,
+        #     6.357306957244873, 8.448796272277832,
+        #     7.873904705047607, 5.783249855041504,
+        #     5.426361083984375, 4.461714744567871,
+        # ]
+        obs_dim = sum(
+            int(np.prod(space.shape)) for space in obs_space.spaces.values()
+        )
+        if len(self.obs_mean) != obs_dim or len(self.obs_std) != obs_dim:
+            raise ValueError(
+                f"Observation normalization has {len(self.obs_mean)} features, "
+                f"but task {config.task!r} has {obs_dim}. Recompute obs_mean "
+                "and obs_std for this training dataset."
+            )
         self._logger = logger
         self._should_log = tools.Every(config.log_every)
         batch_steps = config.batch_size * config.batch_length
@@ -97,11 +156,46 @@ class Dreamer(nn.Module):
             self.eval_data['targets'] = {'state': torch.tensor(eval_data['obs'], device='cuda:0', dtype=torch.float32),}
         self.eval_target = torch.tensor(eval_data['obs'], device='cuda:0')
 
+    def _normalize_obs(self, data):
+        """Return a shallow copy with only observation fields normalized."""
+        normalized = dict(data)
+        if self._config.nq != 0:
+            keys_and_slices = (
+                ("position", slice(None, self._config.nq)),
+                ("velocity", slice(self._config.nq, None)),
+            )
+        else:
+            keys_and_slices = (("state", slice(None)),)
+
+        for key, feature_slice in keys_and_slices:
+            if key not in normalized:
+                continue
+            value = normalized[key]
+            if isinstance(value, torch.Tensor):
+                mean = value.new_tensor(self.obs_mean[feature_slice])
+                std = value.new_tensor(self.obs_std[feature_slice]).clamp_min(1e-6)
+            else:
+                mean = np.asarray(self.obs_mean[feature_slice], dtype=np.float32)
+                std = np.maximum(
+                    np.asarray(self.obs_std[feature_slice], dtype=np.float32),
+                    1e-6,
+                )
+            normalized[key] = (value - mean) / std
+        return normalized
+
+    def _denormalize_prediction(self, prediction):
+        mean = prediction.new_tensor(self.obs_mean)
+        std = prediction.new_tensor(self.obs_std).clamp_min(1e-6)
+        return prediction * std + mean
+
 
     def __call__(self, obs, reset, state=None, training=True):
         if self.eval_tvar:
             condition_steps = 10
-            state_prediction, _ = self._wm.propiro_pred(self.eval_data, condition_steps=condition_steps)
+            eval_data = dict(self.eval_data)
+            eval_data["targets"] = self._normalize_obs(eval_data["targets"])
+            state_prediction, _ = self._wm.propiro_pred(eval_data, condition_steps=condition_steps)
+            state_prediction = self._denormalize_prediction(state_prediction)
             # eval_loss = torch.nn.MSELoss()(state_prediction, self.eval_target[:, condition_steps:, :])
             eval_loss = torch.nn.functional.mse_loss(state_prediction, self.eval_target[:, condition_steps:, :], reduction="none")
             print('eval shape', eval_loss.shape)
@@ -119,12 +213,19 @@ class Dreamer(nn.Module):
         if training:
             if self._update_count % 1000 == 0:
                 condition_steps = 10
-                state_prediction, _ = self._wm.propiro_pred(self.eval_data, condition_steps=condition_steps)
+                eval_data = dict(self.eval_data)
+                eval_data["targets"] = self._normalize_obs(eval_data["targets"])
+                state_prediction, _ = self._wm.propiro_pred(eval_data, condition_steps=condition_steps)
+                state_prediction = self._denormalize_prediction(state_prediction)
                 eval_loss = torch.nn.MSELoss()(state_prediction, self.eval_target[:, condition_steps:, :])
-                wandb.log({'eval_loss': eval_loss}, step=self._update_count)
+                eval_loss1 = torch.nn.MSELoss()(state_prediction[:, :1, :], self.eval_target[:, condition_steps:condition_steps+1, :])
+                eval_loss16 = torch.nn.MSELoss()(state_prediction[:, :16, :], self.eval_target[:, condition_steps:condition_steps+16, :])
+                wandb.log({'eval_loss1': eval_loss1}, step=self._update_count)
+                wandb.log({'eval_loss16': eval_loss16}, step=self._update_count)
+                wandb.log({'eval_loss90': eval_loss}, step=self._update_count)
                 if self.best_loss > eval_loss:
                     self.best_loss = eval_loss
-                    wandb.log({'best_img_loss': self.best_loss}, step=self._update_count)
+                    wandb.log({'best_img_loss90': self.best_loss}, step=self._update_count)
                     self.update_best_ckpt = True
 
             steps = 200 # 100
@@ -144,7 +245,8 @@ class Dreamer(nn.Module):
 
                 # 如果启用了 video 预测日志
                 if self._config.video_pred_log:
-                    openl = self._wm.video_pred(next(self._dataset))
+                    video_data = self._normalize_obs(next(self._dataset))
+                    openl = self._wm.video_pred(video_data)
                     self._logger.add_video("train_openl", to_np(openl), global_step=self._update_count)
 
                 self._logger.flush()  # 确保日志及时写入
@@ -156,6 +258,7 @@ class Dreamer(nn.Module):
             latent = action = None
         else:
             latent, action = state
+        obs = self._normalize_obs(obs)
         obs = self._wm.preprocess(obs)
         embed = self._wm.encoder(obs)
         latent, _ = self._wm.dynamics.obs_step(latent, action, embed, obs["is_first"])
@@ -185,6 +288,7 @@ class Dreamer(nn.Module):
     def _train(self, data):
         if len(data['action'].shape) < 3:
             data['action'] = data['action'][..., None]
+        data = self._normalize_obs(data)
         metrics = {}
         post, context, mets = self._wm._train(data, self._update_count)
         metrics.update(mets)
